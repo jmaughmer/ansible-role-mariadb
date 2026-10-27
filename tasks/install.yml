@@ -1,0 +1,58 @@
+---
+# EL8 and EL9 ship MariaDB as AppStream module streams. Nothing here touches
+# the MariaDB.org repositories.
+- name: Select the MariaDB module stream
+  when: __mariadb_stream | length > 0
+  block:
+    - name: List the enabled MariaDB module stream
+      ansible.builtin.command: dnf -q module list --enabled mariadb
+      register: __mariadb_module_list
+      changed_when: false
+      failed_when: false
+      check_mode: false
+
+    - name: Read the enabled stream
+      ansible.builtin.set_fact:
+        __mariadb_enabled_stream: >-
+          {{ __mariadb_module_list.stdout | default('')
+             | regex_findall('(?m)^mariadb\s+(\S+)\s+\[e\]') | first | default('') }}
+
+    - name: Refuse to switch MariaDB streams
+      ansible.builtin.assert:
+        that: __mariadb_enabled_stream in ['', __mariadb_stream]
+        fail_msg: >-
+          The mariadb:{{ __mariadb_enabled_stream }} module stream is enabled but this
+          run wants {{ __mariadb_stream }}. Switching streams is a major upgrade: dump the
+          databases, then switch with "dnf module switch-to mariadb:{{ __mariadb_stream }}"
+          and run mariadb-upgrade, or set mariadb_module_stream to {{ __mariadb_enabled_stream }}.
+        quiet: true
+
+    - name: Enable the MariaDB module stream
+      ansible.builtin.command: "dnf -y module enable mariadb:{{ __mariadb_stream }}"
+      when: __mariadb_enabled_stream == ''
+      changed_when: true
+
+- name: Install MariaDB packages
+  ansible.builtin.dnf:
+    name: >-
+      {{ mariadb_packages + mariadb_extra_packages + __mariadb_python_packages
+         + (__mariadb_tls_packages if mariadb_tls_enabled | bool else []) }}
+    state: present
+
+# The package can be a virtual provide (EL10), so ask rpm for whatever provides it.
+- name: Read the installed MariaDB version
+  ansible.builtin.command: rpm -q --whatprovides mariadb-server --queryformat '%{VERSION}\n'  # noqa: command-instead-of-module
+  register: __mariadb_rpm_version
+  changed_when: false
+  # Nothing is installed yet in check mode on a new host.
+  failed_when: __mariadb_rpm_version.rc != 0 and not ansible_check_mode
+  check_mode: false
+
+- name: Assert MariaDB is 10.5 or newer
+  ansible.builtin.assert:
+    that: (__mariadb_rpm_version.stdout_lines | first) is version('10.5', '>=')
+    fail_msg: >-
+      MariaDB {{ __mariadb_rpm_version.stdout_lines | first }} is installed. The role needs
+      10.5 or newer (unix_socket root login, require_secure_transport, max_password_errors).
+    quiet: true
+  when: __mariadb_rpm_version.rc == 0

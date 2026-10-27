@@ -1,0 +1,13 @@
+---
+- name: Rotate the encryption key
+  hosts: all
+  vars:
+    mariadb_bind_address: 0.0.0.0
+    mariadb_encryption_enabled: true
+    mariadb_encryption_rotate: true
+    mariadb_databases:
+      - name: appdb
+  tasks:
+    - name: Include the role with rotation
+      ansible.builtin.include_role:
+        name: ansible-role-mariadb

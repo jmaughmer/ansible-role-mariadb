@@ -1,0 +1,68 @@
+---
+- name: Assert supported platform
+  ansible.builtin.assert:
+    that:
+      - ansible_facts['os_family'] == 'RedHat'
+      - ansible_facts['distribution_major_version'] in __mariadb_supported_major_versions
+    fail_msg: >-
+      This role supports RHEL-compatible systems 8, 9 and 10, not
+      {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
+    quiet: true
+
+- name: Assert TLS settings
+  when: mariadb_tls_enabled | bool
+  ansible.builtin.assert:
+    that:
+      - mariadb_tls_source in ['selfsigned', 'provided']
+      - >-
+        mariadb_tls_source != 'provided' or
+        ((mariadb_tls_cert_content | length > 0 or mariadb_tls_cert_src | length > 0) and
+         (mariadb_tls_key_content | length > 0 or mariadb_tls_key_src | length > 0))
+    fail_msg: >-
+      mariadb_tls_source must be "selfsigned" or "provided". With "provided", set
+      mariadb_tls_cert_content or mariadb_tls_cert_src, and mariadb_tls_key_content
+      or mariadb_tls_key_src (the CA is optional).
+    quiet: true
+
+- name: Assert supplied encryption keys
+  when:
+    - mariadb_encryption_enabled | bool
+    - mariadb_encryption_keys | length > 0
+  ansible.builtin.assert:
+    that:
+      - mariadb_encryption_keys | selectattr('id', 'undefined') | list | length == 0
+      - mariadb_encryption_keys | selectattr('key', 'undefined') | list | length == 0
+      - 1 in (mariadb_encryption_keys | map(attribute='id') | map('int') | list)
+      - (mariadb_encryption_keys | map(attribute='id') | list | unique | length) == (mariadb_encryption_keys | length)
+      - >-
+        mariadb_encryption_keys | map(attribute='key') | map('string')
+        | reject('match', '^[0-9A-Fa-f]{32}$|^[0-9A-Fa-f]{48}$|^[0-9A-Fa-f]{64}$') | list | length == 0
+      - mariadb_encryption_key_id | int == 0 or mariadb_encryption_key_id | int in (mariadb_encryption_keys | map(attribute='id') | map('int') | list)
+      - not (mariadb_encryption_rotate | bool)
+    fail_msg: >-
+      mariadb_encryption_keys needs unique ids including id 1 (MariaDB always
+      uses key 1 for the redo log and system tablespace), and each key must be
+      32, 48 or 64 hex characters. mariadb_encryption_key_id must be one of the ids.
+      To rotate supplied keys, add a new entry; mariadb_encryption_rotate only
+      applies to keys the role generates.
+    quiet: true
+
+- name: Assert FIPS mode is enabled
+  ansible.builtin.assert:
+    that: ansible_facts['fips'] | default(false) | bool
+    fail_msg: >-
+      mariadb_fips_required is set but the host is not in FIPS mode. Enable it with
+      "fips-mode-setup --enable" (EL8/EL9) or install with fips=1 (EL10), then reboot.
+    quiet: true
+  when: mariadb_fips_required | bool
+
+- name: Assert encryption keys are 256-bit under FIPS
+  ansible.builtin.assert:
+    that: >-
+      mariadb_encryption_keys | map(attribute='key') | map('string')
+      | reject('match', '^[0-9A-Fa-f]{64}$') | list | length == 0
+    fail_msg: FIPS hosts should use 256-bit (64 hex character) encryption keys.
+    quiet: true
+  when:
+    - mariadb_encryption_enabled | bool
+    - ansible_facts['fips'] | default(false) | bool or mariadb_fips_required | bool

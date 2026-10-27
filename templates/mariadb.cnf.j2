@@ -1,0 +1,121 @@
+# {{ ansible_managed }}
+{% macro opt(key, value) -%}
+{% if value is sameas true -%}
+{{ key }}
+{%- else -%}
+{{ key }} = {{ value }}
+{%- endif %}
+{%- endmacro %}
+{% set onoff = {true: 'ON', false: 'OFF'} %}
+[mysqld]
+bind-address = {{ mariadb_bind_address }}
+port = {{ mariadb_port }}
+datadir = {{ mariadb_datadir }}
+socket = {{ mariadb_socket }}
+log-error = {{ mariadb_error_log }}
+pid-file = {{ mariadb_pid_file }}
+log_warnings = {{ mariadb_log_warnings }}
+
+character-set-server = {{ mariadb_character_set_server }}
+collation-server = {{ mariadb_collation_server }}
+sql_mode = {{ mariadb_sql_mode }}
+{% if mariadb_skip_name_resolve | bool %}
+skip-name-resolve
+{% endif %}
+max_connections = {{ mariadb_max_connections }}
+max_user_connections = {{ mariadb_max_user_connections }}
+wait_timeout = {{ mariadb_wait_timeout }}
+interactive_timeout = {{ mariadb_interactive_timeout }}
+
+innodb_buffer_pool_size = {{ mariadb_innodb_buffer_pool_size }}
+innodb_log_file_size = {{ mariadb_innodb_log_file_size }}
+innodb_file_per_table = {{ onoff[mariadb_innodb_file_per_table | bool] }}
+
+# Hardening
+local_infile = {{ onoff[mariadb_local_infile | bool] }}
+symbolic-links = {{ 1 if mariadb_symbolic_links | bool else 0 }}
+{% if mariadb_secure_file_priv | length > 0 %}
+secure_file_priv = {{ mariadb_secure_file_priv }}
+{% endif %}
+default_password_lifetime = {{ mariadb_default_password_lifetime }}
+{% if mariadb_max_password_errors | int > 0 %}
+max_password_errors = {{ mariadb_max_password_errors }}
+{% endif %}
+{% if mariadb_password_check_enabled | bool %}
+
+# Password complexity
+plugin_load_add = simple_password_check
+simple_password_check_minimal_length = {{ mariadb_password_minimal_length }}
+simple_password_check_digits = {{ mariadb_password_minimal_digits }}
+simple_password_check_letters_same_case = {{ mariadb_password_minimal_letters_same_case }}
+simple_password_check_other_characters = {{ mariadb_password_minimal_special_chars }}
+{% endif %}
+{% if mariadb_audit_enabled | bool %}
+
+# Audit logging
+plugin_load_add = server_audit
+server_audit = FORCE_PLUS_PERMANENT
+server_audit_logging = ON
+server_audit_events = {{ mariadb_audit_events }}
+server_audit_output_type = {{ mariadb_audit_output_type }}
+{% if mariadb_audit_output_type == 'file' %}
+server_audit_file_path = {{ mariadb_audit_file_path }}
+server_audit_file_rotate_size = {{ mariadb_audit_file_rotate_size }}
+server_audit_file_rotations = {{ mariadb_audit_file_rotations }}
+{% else %}
+server_audit_syslog_facility = {{ mariadb_audit_syslog_facility }}
+{% endif %}
+{% if mariadb_audit_incl_users | length > 0 %}
+server_audit_incl_users = {{ mariadb_audit_incl_users }}
+{% endif %}
+{% if mariadb_audit_excl_users | length > 0 %}
+server_audit_excl_users = {{ mariadb_audit_excl_users }}
+{% endif %}
+{% endif %}
+{% if mariadb_tls_enabled | bool %}
+
+# TLS
+ssl_cert = {{ mariadb_tls_cert_path }}
+ssl_key = {{ mariadb_tls_key_path }}
+{% if __mariadb_tls_has_ca | bool %}
+ssl_ca = {{ mariadb_tls_ca_path }}
+{% endif %}
+tls_version = {{ mariadb_tls_version }}
+{% if mariadb_tls_cipher | length > 0 %}
+ssl_cipher = {{ mariadb_tls_cipher }}
+{% endif %}
+require_secure_transport = {{ onoff[mariadb_require_secure_transport | bool] }}
+{% endif %}
+{% if mariadb_encryption_enabled | bool %}
+
+# Data-at-rest encryption
+plugin_load_add = file_key_management
+file_key_management_filename = {{ __mariadb_keyfile_active }}
+{% if mariadb_encryption_keyfile_encrypted | bool %}
+file_key_management_filekey = FILE:{{ __mariadb_filekey }}
+{% endif %}
+file_key_management_encryption_algorithm = {{ mariadb_encryption_algorithm }}
+innodb_encrypt_tables = {{ mariadb_encryption_innodb_tables }}
+innodb_encrypt_log = {{ onoff[mariadb_encryption_innodb_log | bool] }}
+innodb_encrypt_temporary_tables = {{ onoff[mariadb_encryption_innodb_temporary_tables | bool] }}
+innodb_encryption_threads = {{ mariadb_encryption_threads }}
+innodb_default_encryption_key_id = {{ __mariadb_encryption_active_key_id }}
+encrypt_tmp_files = {{ onoff[mariadb_encryption_tmp_files | bool] }}
+encrypt_tmp_disk_tables = {{ onoff[mariadb_encryption_tmp_disk_tables | bool] }}
+encrypt_binlog = {{ onoff[mariadb_encryption_binlog | bool] }}
+aria_encrypt_tables = {{ onoff[mariadb_encryption_aria_tables | bool] }}
+{% endif %}
+{% for key, value in mariadb_mysqld_options | dictsort %}
+{{ opt(key, value) }}
+{% endfor %}
+
+[client]
+socket = {{ mariadb_socket }}
+port = {{ mariadb_port }}
+{% for section, options in mariadb_extra_sections | dictsort %}
+
+[{{ section }}]
+{% for key, value in options | dictsort %}
+{{ opt(key, value) }}
+{% endfor %}
+{% endfor %}

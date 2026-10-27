@@ -1,0 +1,90 @@
+---
+# ---------------------------------------------------------------------------
+# FIPS
+# ---------------------------------------------------------------------------
+- name: Read the system crypto policy
+  ansible.builtin.command: update-crypto-policies --show
+  register: __mariadb_crypto_policy
+  changed_when: false
+  failed_when: false
+  check_mode: false
+
+- name: Set the system crypto policy
+  ansible.builtin.command: "update-crypto-policies --set {{ mariadb_crypto_policy }}"
+  when:
+    - mariadb_crypto_policy | length > 0
+    - (__mariadb_crypto_policy.stdout | default('') | trim) != mariadb_crypto_policy
+  changed_when: true
+  notify:
+    - Restart mariadb
+    - Warn about crypto policy reboot
+
+# ---------------------------------------------------------------------------
+# SELinux
+# ---------------------------------------------------------------------------
+- name: Configure SELinux for MariaDB
+  when:
+    - mariadb_selinux_manage | bool
+    - ansible_facts['selinux']['status'] | default('disabled') == 'enabled'
+  block:
+    - name: Install SELinux management tools
+      ansible.builtin.dnf:
+        name:
+          - policycoreutils-python-utils
+          - python3-libselinux
+          - python3-policycoreutils
+        state: present
+
+    - name: Label the MariaDB port
+      community.general.seport:
+        ports: "{{ mariadb_port }}"
+        proto: tcp
+        setype: mysqld_port_t
+        state: present
+      when: mariadb_port | int != 3306
+      notify: Restart mariadb
+
+    - name: Label relocated MariaDB directories
+      community.general.sefcontext:
+        target: "{{ item.path }}(/.*)?"
+        setype: "{{ item.setype }}"
+        state: present
+      loop:
+        - { path: "{{ mariadb_datadir }}", default: /var/lib/mysql, setype: mysqld_db_t }
+        - { path: "{{ mariadb_log_dir }}", default: /var/log/mariadb, setype: mysqld_log_t }
+        - { path: "{{ mariadb_secure_file_priv }}", default: "", setype: mysqld_db_t }
+        - { path: "{{ mariadb_encryption_dir if mariadb_encryption_enabled | bool else '' }}", default: "", setype: mysqld_etc_t }
+      loop_control:
+        label: "{{ item.path }}"
+      when:
+        - item.path | length > 0
+        - item.path != item.default
+      notify: Restart mariadb
+
+    - name: Add custom file contexts
+      community.general.sefcontext:
+        target: "{{ item.target }}"
+        setype: "{{ item.setype }}"
+        ftype: "{{ item.ftype | default('a') }}"
+        state: "{{ item.state | default('present') }}"
+      loop: "{{ mariadb_selinux_fcontexts }}"
+      loop_control:
+        label: "{{ item.target }}"
+
+    - name: Restore file contexts on MariaDB paths
+      ansible.builtin.command: "restorecon -R -v {{ __mariadb_selinux_paths | join(' ') }}"
+      register: __mariadb_restorecon
+      changed_when: __mariadb_restorecon.stdout | length > 0
+      vars:
+        __mariadb_selinux_paths: >-
+          {{ ([mariadb_datadir, mariadb_log_dir, mariadb_secure_file_priv]
+              + ([mariadb_tls_dir] if mariadb_tls_enabled | bool else [])
+              + ([mariadb_encryption_dir] if mariadb_encryption_enabled | bool else []))
+             | select | unique }}
+
+    - name: Set SELinux booleans
+      ansible.posix.seboolean:
+        name: "{{ item.key }}"
+        state: "{{ item.value | bool }}"
+        persistent: true
+      loop: "{{ mariadb_selinux_booleans | dict2items }}"

@@ -1,0 +1,24 @@
+---
+- name: Create MariaDB directories
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    state: directory
+    owner: mysql
+    group: mysql
+    mode: "{{ item.mode }}"
+  loop:
+    - { path: "{{ mariadb_datadir }}", mode: "{{ mariadb_datadir_mode }}" }
+    - { path: "{{ mariadb_log_dir }}", mode: "{{ mariadb_log_dir_mode }}" }
+    - { path: "{{ mariadb_secure_file_priv }}", mode: "0750" }
+  loop_control:
+    label: "{{ item.path }}"
+  when: item.path | length > 0
+
+- name: Write the MariaDB server configuration
+  ansible.builtin.template:
+    src: mariadb.cnf.j2
+    dest: "{{ mariadb_config_file }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mariadb

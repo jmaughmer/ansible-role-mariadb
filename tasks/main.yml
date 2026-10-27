@@ -1,0 +1,58 @@
+---
+- name: Validate role variables
+  ansible.builtin.import_tasks: assert.yml
+  tags: [mariadb, mariadb_assert]
+
+- name: Install MariaDB
+  ansible.builtin.import_tasks: install.yml
+  tags: [mariadb, mariadb_install]
+
+- name: Configure TLS certificates
+  ansible.builtin.import_tasks: tls.yml
+  when: mariadb_tls_enabled | bool
+  tags: [mariadb, mariadb_tls]
+
+- name: Manage data-at-rest encryption keys
+  ansible.builtin.import_tasks: encryption.yml
+  when: mariadb_encryption_enabled | bool
+  # The config template needs the active key id this sets.
+  tags: [mariadb, mariadb_encryption, mariadb_config]
+
+- name: Configure MariaDB
+  ansible.builtin.import_tasks: config.yml
+  tags: [mariadb, mariadb_config]
+
+- name: Configure SELinux and FIPS settings
+  ansible.builtin.import_tasks: security.yml
+  tags: [mariadb, mariadb_security, mariadb_selinux, mariadb_fips]
+
+- name: Configure fapolicyd trust
+  ansible.builtin.import_tasks: fapolicyd.yml
+  when: mariadb_fapolicyd_manage | bool
+  tags: [mariadb, mariadb_security, mariadb_fapolicyd]
+
+- name: Configure the firewall
+  ansible.builtin.import_tasks: firewall.yml
+  tags: [mariadb, mariadb_firewall]
+
+- name: Manage the MariaDB service
+  ansible.builtin.import_tasks: service.yml
+  tags: [mariadb, mariadb_service]
+
+- name: Secure the installation
+  ansible.builtin.import_tasks: secure.yml
+  when: mariadb_service_state == 'started'
+  tags: [mariadb, mariadb_secure]
+
+- name: Manage databases and users
+  ansible.builtin.import_tasks: databases.yml
+  when: mariadb_service_state == 'started'
+  tags: [mariadb, mariadb_databases]
+
+- name: Re-encrypt tables with the active key
+  ansible.builtin.import_tasks: reencrypt.yml
+  when:
+    - mariadb_encryption_enabled | bool
+    - mariadb_encryption_reencrypt | bool
+    - mariadb_service_state == 'started'
+  tags: [mariadb, mariadb_encryption]

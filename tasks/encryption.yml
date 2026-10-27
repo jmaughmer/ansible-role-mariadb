@@ -1,0 +1,137 @@
+---
+# Keys for the file_key_management plugin live in a "id;hex-key" file. The
+# plugin reads it once at start-up, so any change restarts MariaDB. Keys are
+# supplied (mariadb_encryption_keys) or generated here and kept on the host.
+# The key file can itself be encrypted with a file key, which is how MariaDB
+# documents it: openssl enc -aes-256-cbc -md sha1.
+- name: Create the encryption key directory
+  ansible.builtin.file:
+    path: "{{ mariadb_encryption_dir }}"
+    state: directory
+    owner: root
+    group: mysql
+    mode: "0750"
+
+- name: Create the key file encryption key
+  ansible.builtin.shell: "umask 0277 && openssl rand -hex 64 > {{ __mariadb_filekey }}"
+  args:
+    creates: "{{ __mariadb_filekey }}"
+  when: mariadb_encryption_keyfile_encrypted | bool
+
+- name: Set key file encryption key permissions
+  ansible.builtin.file:
+    path: "{{ __mariadb_filekey }}"
+    owner: root
+    group: mysql
+    mode: "0440"
+  when: mariadb_encryption_keyfile_encrypted | bool and not ansible_check_mode
+
+- name: Look for existing key files
+  ansible.builtin.stat:
+    path: "{{ item }}"
+  loop:
+    - "{{ __mariadb_keyfile_enc }}"
+    - "{{ __mariadb_keyfile }}"
+  register: __mariadb_keyfile_stat
+
+- name: Read the current keys
+  ansible.builtin.command: >-
+    {{ ('openssl enc -d ' ~ __mariadb_keyfile_openssl_args ~ ' -in ' ~ __mariadb_keyfile_enc)
+       if __mariadb_keyfile_stat.results[0].stat.exists
+       else ('cat ' ~ __mariadb_keyfile) }}
+  register: __mariadb_keys_read
+  when: __mariadb_keyfile_stat.results | selectattr('stat.exists') | list | length > 0
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Parse the current keys
+  ansible.builtin.set_fact:
+    __mariadb_keys_current: >-
+      {{ dict(__mariadb_keys_read.stdout_lines | default([]) | map('trim')
+              | select('match', '^[0-9]+;[0-9A-Fa-f]+$') | map('split', ';')) }}
+  no_log: true
+
+- name: Generate a new key
+  ansible.builtin.command: openssl rand -hex 32
+  register: __mariadb_new_key
+  changed_when: false
+  check_mode: false
+  no_log: true
+  when:
+    - mariadb_encryption_keys | length == 0
+    - __mariadb_keys_current | length == 0 or mariadb_encryption_rotate | bool
+
+- name: Work out the wanted keys
+  ansible.builtin.set_fact:
+    __mariadb_keys_wanted: >-
+      {{ __mariadb_keys_supplied if mariadb_encryption_keys | length > 0
+         else __mariadb_keys_current | combine(__mariadb_key_added) }}
+  vars:
+    __mariadb_keys_supplied: >-
+      {{ dict(mariadb_encryption_keys | map(attribute='id') | map('int') | map('string')
+              | zip(mariadb_encryption_keys | map(attribute='key') | map('string'))) }}
+    __mariadb_key_added: >-
+      {{ {((__mariadb_keys_current.keys() | map('int') | list + [0]) | max + 1) | string: __mariadb_new_key.stdout | trim}
+         if __mariadb_new_key.stdout is defined else {} }}
+  no_log: true
+
+- name: Pick the active key
+  ansible.builtin.set_fact:
+    __mariadb_encryption_active_key_id: >-
+      {{ (mariadb_encryption_key_id | int) if mariadb_encryption_key_id | int > 0
+         else (__mariadb_keys_wanted.keys() | map('int') | max) }}
+
+- name: Warn when supplied keys drop a key the server already uses
+  ansible.builtin.debug:
+    msg: >-
+      Key ids {{ __mariadb_keys_current.keys() | difference(__mariadb_keys_wanted.keys()) | sort | join(', ') }}
+      are in the current key file but not in mariadb_encryption_keys. Tables or logs still
+      encrypted with them become unreadable. Keep old keys until nothing uses them.
+  when: __mariadb_keys_current.keys() | difference(__mariadb_keys_wanted.keys()) | length > 0
+
+- name: Write the key file
+  when: __mariadb_keys_wanted != __mariadb_keys_current or not __mariadb_keyfile_wanted_exists
+  vars:
+    __mariadb_keyfile_wanted_exists: >-
+      {{ __mariadb_keyfile_stat.results[0 if mariadb_encryption_keyfile_encrypted | bool else 1].stat.exists }}
+    __mariadb_key_ids: "{{ __mariadb_keys_wanted.keys() | map('int') | sort | map('string') | list }}"
+    __mariadb_keyfile_content: >-
+      {{ __mariadb_key_ids | zip(__mariadb_key_ids | map('extract', __mariadb_keys_wanted))
+         | map('join', ';') | map('regex_replace', '$', __mariadb_newline) | join }}
+    __mariadb_newline: "\n"
+  block:
+    - name: Write the plain key file
+      ansible.builtin.copy:
+        dest: "{{ __mariadb_keyfile }}"
+        content: "{{ __mariadb_keyfile_content }}"
+        owner: root
+        group: mysql
+        mode: "0440"
+      when: not mariadb_encryption_keyfile_encrypted | bool
+      no_log: true
+      notify: Restart mariadb
+
+    # The plain keys go to openssl on stdin so they never touch the disk.
+    - name: Write the encrypted key file
+      ansible.builtin.command:
+        cmd: "openssl enc -e {{ __mariadb_keyfile_openssl_args }} -out {{ __mariadb_keyfile_enc }}"
+        stdin: "{{ __mariadb_keyfile_content }}"
+        stdin_add_newline: false
+      when: mariadb_encryption_keyfile_encrypted | bool
+      changed_when: true
+      no_log: true
+      notify: Restart mariadb
+
+- name: Set key file permissions
+  ansible.builtin.file:
+    path: "{{ __mariadb_keyfile_active }}"
+    owner: root
+    group: mysql
+    mode: "0440"
+  when: not ansible_check_mode
+
+- name: Remove the key file of the other format
+  ansible.builtin.file:
+    path: "{{ __mariadb_keyfile if mariadb_encryption_keyfile_encrypted | bool else __mariadb_keyfile_enc }}"
+    state: absent

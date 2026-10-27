@@ -1,0 +1,13 @@
+---
+- name: Enable and start MariaDB
+  ansible.builtin.systemd_service:
+    name: mariadb
+    state: "{{ mariadb_service_state }}"
+    enabled: "{{ mariadb_service_enabled }}"
+  register: __mariadb_service
+
+# A restart queued by configuration changes is redundant right after the
+# first start, but harmless; flushing makes new settings live before the SQL
+# tasks below run.
+- name: Flush handlers so new configuration is active
+  ansible.builtin.meta: flush_handlers

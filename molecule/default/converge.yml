@@ -1,0 +1,29 @@
+---
+- name: Converge
+  hosts: all
+  vars:
+    mariadb_bind_address: 0.0.0.0
+    mariadb_encryption_enabled: true
+    mariadb_databases:
+      - name: appdb
+    mariadb_users:
+      - name: app
+        host: "%"
+        password: Molecule-Passw0rd!Remote
+        priv: "appdb.*:ALL"
+      - name: applocal
+        host: localhost
+        password: Molecule-Passw0rd!Local
+        priv: "appdb.*:SELECT"
+    # fapolicyd is installed (not started) by prepare.yml to test the trust file.
+    mariadb_fapolicyd_trusted_files: [/usr/local/bin/mariadb-molecule-helper]
+  tasks:
+    - name: Include the role
+      ansible.builtin.include_role:
+        name: ansible-role-mariadb
+
+    - name: Create a table to encrypt
+      community.mysql.mysql_query:
+        query: CREATE TABLE IF NOT EXISTS appdb.t1 (id INT PRIMARY KEY, v VARCHAR(32))
+        login_unix_socket: /var/lib/mysql/mysql.sock
+      changed_when: false

@@ -1,0 +1,29 @@
+---
+- name: Gather service facts
+  ansible.builtin.service_facts:
+
+- name: Open firewalld for MariaDB
+  when:
+    - mariadb_firewalld_manage | bool
+    - mariadb_bind_address not in ['127.0.0.1', '::1', 'localhost']
+    - ansible_facts.services['firewalld.service'] is defined
+    - ansible_facts.services['firewalld.service'].state == 'running'
+  block:
+    - name: Allow the MariaDB port
+      ansible.posix.firewalld:
+        port: "{{ mariadb_port }}/tcp"
+        zone: "{{ mariadb_firewalld_zone }}"
+        permanent: true
+        immediate: true
+        state: "{{ 'enabled' if mariadb_firewalld_sources | length == 0 else 'disabled' }}"
+
+    - name: Allow the MariaDB port from trusted sources
+      ansible.posix.firewalld:
+        rich_rule: >-
+          rule family="{{ 'ipv6' if ':' in item else 'ipv4' }}" source address="{{ item }}"
+          port port="{{ mariadb_port }}" protocol="tcp" accept
+        zone: "{{ mariadb_firewalld_zone }}"
+        permanent: true
+        immediate: true
+        state: enabled
+      loop: "{{ mariadb_firewalld_sources }}"

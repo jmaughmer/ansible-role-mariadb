@@ -1,0 +1,34 @@
+---
+- name: Manage databases
+  community.mysql.mysql_db:
+    name: "{{ item.name }}"
+    encoding: "{{ item.encoding | default(mariadb_character_set_server) }}"
+    collation: "{{ item.collation | default(mariadb_collation_server) }}"
+    state: "{{ item.state | default('present') }}"
+    login_unix_socket: "{{ mariadb_socket }}"
+  loop: "{{ mariadb_databases }}"
+  loop_control:
+    label: "{{ item.name }}"
+
+# Accounts for remote hosts get mariadb_user_tls_requires unless the entry
+# sets tls_requires. Socket logins never use TLS, so localhost is exempt.
+- name: Manage users
+  community.mysql.mysql_user:
+    name: "{{ item.name }}"
+    host: "{{ item.host | default('localhost') }}"
+    password: "{{ item.password | default(omit) }}"
+    priv: "{{ item.priv | default(omit) }}"
+    append_privs: "{{ item.append_privs | default(false) }}"
+    tls_requires: "{{ __mariadb_tls_requires if __mariadb_tls_requires | length > 0 else omit }}"
+    update_password: "{{ item.update_password | default('always') }}"
+    state: "{{ item.state | default('present') }}"
+    login_unix_socket: "{{ mariadb_socket }}"
+    column_case_sensitive: true
+  loop: "{{ mariadb_users }}"
+  loop_control:
+    label: "{{ item.name }}@{{ item.host | default('localhost') }}"
+  vars:
+    __mariadb_tls_requires: >-
+      {{ item.tls_requires if item.tls_requires is defined
+         else ('' if item.host | default('localhost') == 'localhost' else mariadb_user_tls_requires) }}
+  no_log: true
