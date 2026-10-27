@@ -4,8 +4,8 @@
     path: "{{ mariadb_tls_dir }}"
     state: directory
     owner: root
-    group: mysql
-    mode: "0750"
+    group: root
+    mode: "0755"
 
 # ---------------------------------------------------------------------------
 # Supplied certificate
