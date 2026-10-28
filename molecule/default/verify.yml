@@ -1,0 +1,122 @@
+---
+- name: Verify
+  hosts: all
+  gather_facts: false
+  vars:
+    socket: /var/lib/mysql/mysql.sock
+    ca: /etc/pki/mariadb/ca.crt
+  tasks:
+    - name: Collect service state
+      ansible.builtin.service_facts:
+
+    - name: Assert MariaDB is running
+      ansible.builtin.assert:
+        that: ansible_facts.services['mariadb.service'].state == 'running'
+
+    - name: Read server variables
+      community.mysql.mysql_query:
+        query: >-
+          SHOW GLOBAL VARIABLES WHERE Variable_name IN (
+            'have_ssl', 'require_secure_transport', 'local_infile', 'server_audit_logging',
+            'innodb_encrypt_tables', 'innodb_encrypt_log', 'simple_password_check_minimal_length',
+            'max_password_errors', 'secure_file_priv', 'wait_timeout', 'tls_version')
+        login_unix_socket: "{{ socket }}"
+      register: vars_result
+
+    - name: Assert hardening, TLS and encryption settings
+      vars:
+        v: "{{ vars_result.query_result[0] | items2dict(key_name='Variable_name', value_name='Value') }}"
+      ansible.builtin.assert:
+        that:
+          - v.have_ssl == 'YES'
+          - v.require_secure_transport == 'ON'
+          - v.local_infile == 'OFF'
+          - v.server_audit_logging == 'ON'
+          - v.innodb_encrypt_tables == 'ON'
+          - v.innodb_encrypt_log == 'ON'
+          - v.simple_password_check_minimal_length == '15'
+          - v.max_password_errors == '3'
+          - v.secure_file_priv.rstrip('/') == '/var/lib/mysql-files'
+          - v.wait_timeout == '600'
+          - "'TLSv1.0' not in v.tls_version and 'TLSv1.1' not in v.tls_version"
+        fail_msg: "{{ v }}"
+
+    - name: Assert anonymous users and the test database are gone
+      community.mysql.mysql_query:
+        query:
+          - SELECT COUNT(*) AS n FROM mysql.user WHERE User = ''
+          - SELECT COUNT(*) AS n FROM information_schema.SCHEMATA WHERE SCHEMA_NAME = 'test'
+        login_unix_socket: "{{ socket }}"
+      register: cleanup
+      failed_when: cleanup.query_result | map('first') | map(attribute='n') | map('int') | sum != 0
+
+    - name: Weak passwords are rejected
+      community.mysql.mysql_query:
+        query: CREATE USER 'weak'@'localhost' IDENTIFIED BY 'short'
+        login_unix_socket: "{{ socket }}"
+      register: weak
+      failed_when: weak is succeeded
+
+    - name: Plain-text TCP logins are refused
+      ansible.builtin.command: >-
+        mariadb --protocol=TCP -h 127.0.0.1 -u app -pMolecule-Passw0rd!Remote --skip-ssl -e 'SELECT 1'
+      register: plain
+      changed_when: false
+      failed_when: plain.rc == 0
+
+    - name: TLS logins with certificate verification work
+      ansible.builtin.command: >-
+        mariadb --protocol=TCP -h 127.0.0.1 -u app -pMolecule-Passw0rd!Remote
+        --ssl --ssl-ca={{ ca }} --ssl-verify-server-cert -N
+        -e "SHOW STATUS LIKE 'Ssl_version'"
+      register: tls
+      changed_when: false
+      failed_when: tls.rc != 0 or 'TLSv1.' not in tls.stdout
+
+    - name: Remote account requires TLS
+      community.mysql.mysql_query:
+        query: SELECT JSON_VALUE(Priv, '$.ssl_type') AS t FROM mysql.global_priv WHERE User = 'app' AND Host = '%'
+        login_unix_socket: "{{ socket }}"
+      register: ssl_type
+      failed_when: (ssl_type.query_result[0][0].t | string) != '1'
+
+    - name: Tables are encrypted
+      community.mysql.mysql_query:
+        query: SELECT ENCRYPTION_SCHEME AS s, CURRENT_KEY_ID AS k FROM information_schema.INNODB_TABLESPACES_ENCRYPTION WHERE NAME = 'appdb/t1'
+        login_unix_socket: "{{ socket }}"
+      register: enc
+      failed_when: enc.query_result[0] | length != 1 or enc.query_result[0][0].s | int != 1
+
+    - name: Check key files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop:
+        - /etc/mysql/encryption/keyfile.enc
+        - /etc/mysql/encryption/keyfile.key
+        - /etc/mysql/encryption/keyfile
+      register: keyfiles
+
+    - name: Assert only the encrypted key file exists, readable by mysql only
+      ansible.builtin.assert:
+        that:
+          - keyfiles.results[0].stat.exists and keyfiles.results[0].stat.mode == '0440'
+          - keyfiles.results[1].stat.exists and keyfiles.results[1].stat.mode == '0440'
+          - not keyfiles.results[2].stat.exists
+
+    - name: Read the audit log
+      ansible.builtin.slurp:
+        src: /var/log/mariadb/server_audit.log
+      register: audit
+
+    - name: Assert connections are audited
+      ansible.builtin.assert:
+        that: "',CONNECT,' in (audit.content | b64decode)"
+
+    - name: Read the fapolicyd trust file
+      ansible.builtin.slurp:
+        src: /etc/fapolicyd/trust.d/mariadb
+      register: trust
+
+    - name: Assert the helper is trusted
+      ansible.builtin.assert:
+        that: "'/usr/local/bin/mariadb-molecule-helper ' in (trust.content | b64decode)"

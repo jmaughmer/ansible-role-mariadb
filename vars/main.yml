@@ -1,0 +1,32 @@
+---
+__mariadb_supported_major_versions: ["8", "9", "10"]
+
+# AppStream module stream per release ("" = non-modular packages).
+__mariadb_default_streams:
+  "8": "10.11"
+  "9": "10.11"
+  "10": ""
+__mariadb_stream: >-
+  {{ mariadb_module_stream if mariadb_module_stream | length > 0
+     else __mariadb_default_streams[ansible_facts['distribution_major_version']] }}
+
+# Python MySQL driver used by community.mysql on the managed host.
+__mariadb_python_packages: [python3-PyMySQL]
+
+__mariadb_tls_packages: [python3-cryptography]
+
+__mariadb_keyfile: "{{ mariadb_encryption_dir }}/keyfile"
+__mariadb_keyfile_enc: "{{ mariadb_encryption_dir }}/keyfile.enc"
+__mariadb_filekey: "{{ mariadb_encryption_dir }}/keyfile.key"
+__mariadb_keyfile_active: "{{ __mariadb_keyfile_enc if mariadb_encryption_keyfile_encrypted | bool else __mariadb_keyfile }}"
+# openssl enc arguments MariaDB's file_key_management expects for an
+# encrypted key file (EVP_BytesToKey with SHA-1, AES-256-CBC).
+__mariadb_keyfile_openssl_args: "-aes-256-cbc -md sha1 -pass file:{{ __mariadb_filekey }}"
+
+__mariadb_selinux_default_paths:
+  datadir: /var/lib/mysql
+  log_dir: /var/log/mariadb
+
+__mariadb_tls_has_ca: >-
+  {{ mariadb_tls_source == 'selfsigned'
+     or mariadb_tls_ca_content | length > 0 or mariadb_tls_ca_src | length > 0 }}

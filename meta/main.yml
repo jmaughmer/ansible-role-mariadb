@@ -1,0 +1,16 @@
+---
+galaxy_info:
+  role_name: mariadb
+  namespace: jmaughmer
+  author: Justin Maughmer
+  description: >-
+    Install and harden MariaDB from AppStream on RHEL 8, 9 and 10, with TLS,
+    data-at-rest encryption and key rotation, DISA STIG settings, SELinux,
+    fapolicyd and FIPS support
+  license: MIT
+  min_ansible_version: "2.15"
+  platforms:
+    - name: EL
+      versions: ["8", "9", "10"]
+  galaxy_tags: [mariadb, mysql, database, stig, fips, selinux, tls, encryption]
+dependencies: []

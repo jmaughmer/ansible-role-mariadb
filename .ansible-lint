@@ -1,0 +1,10 @@
+---
+profile: production
+exclude_paths:
+  - .cache/
+  - .github/
+skip_list:
+  - var-naming[no-role-prefix]  # internal __mariadb_ variables are intentionally double-underscored
+  # community.mysql is redirected to ansible.mysql in the newest Ansible
+  # releases, but ansible-core 2.16 (needed for EL8) only has community.mysql.
+  - fqcn[canonical]

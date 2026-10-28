@@ -1,0 +1,35 @@
+---
+- name: Verify rotation
+  hosts: all
+  gather_facts: false
+  tasks:
+    - name: Decrypt the key file
+      ansible.builtin.command: >-
+        openssl enc -d -aes-256-cbc -md sha1
+        -pass file:/etc/mysql/encryption/keyfile.key -in /etc/mysql/encryption/keyfile.enc
+      register: keyfile
+      changed_when: false
+      no_log: true
+
+    - name: Assert the key file holds two keys
+      ansible.builtin.assert:
+        that: keyfile.stdout_lines | map('regex_replace', ';.*$', '') | list == ['1', '2']
+
+    - name: Read the encryption state
+      community.mysql.mysql_query:
+        query:
+          - SELECT @@innodb_default_encryption_key_id AS id
+          - SELECT CURRENT_KEY_ID AS id FROM information_schema.INNODB_TABLESPACES_ENCRYPTION WHERE NAME = 'appdb/t1'
+        login_unix_socket: /var/lib/mysql/mysql.sock
+      register: state
+
+    - name: Assert the default key and the table moved to key 2
+      ansible.builtin.assert:
+        that:
+          - state.query_result[0][0].id | int == 2
+          - state.query_result[1][0].id | int == 2
+
+    - name: Assert the table is still readable
+      community.mysql.mysql_query:
+        query: SELECT COUNT(*) AS n FROM appdb.t1
+        login_unix_socket: /var/lib/mysql/mysql.sock

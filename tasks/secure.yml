@@ -1,0 +1,41 @@
+---
+# root@localhost authenticates with unix_socket, so the role connects as
+# root over the socket and never needs a database password.
+- name: Remove anonymous users
+  community.mysql.mysql_user:
+    name: ""
+    host_all: true
+    state: absent
+    login_unix_socket: "{{ mariadb_socket }}"
+    column_case_sensitive: true
+  when: mariadb_remove_anonymous_users | bool
+
+- name: Find remote root accounts
+  community.mysql.mysql_query:
+    query: >-
+      SELECT Host FROM mysql.user
+      WHERE User = 'root' AND Host NOT IN ('localhost', '127.0.0.1', '::1')
+    login_unix_socket: "{{ mariadb_socket }}"
+  register: __mariadb_remote_root
+  changed_when: false
+  check_mode: false
+  when: mariadb_remove_remote_root | bool
+
+- name: Remove remote root accounts
+  community.mysql.mysql_user:
+    name: root
+    host: "{{ item.Host }}"
+    state: absent
+    login_unix_socket: "{{ mariadb_socket }}"
+    column_case_sensitive: true
+  loop: "{{ __mariadb_remote_root.query_result[0] | default([]) }}"
+  loop_control:
+    label: "root@{{ item.Host }}"
+  when: mariadb_remove_remote_root | bool
+
+- name: Remove the test database
+  community.mysql.mysql_db:
+    name: test
+    state: absent
+    login_unix_socket: "{{ mariadb_socket }}"
+  when: mariadb_remove_test_database | bool

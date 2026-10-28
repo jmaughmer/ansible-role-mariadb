@@ -1,0 +1,118 @@
+---
+- name: Create the TLS directory
+  ansible.builtin.file:
+    path: "{{ mariadb_tls_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+# ---------------------------------------------------------------------------
+# Supplied certificate
+# ---------------------------------------------------------------------------
+- name: Install the supplied certificate files
+  ansible.builtin.copy:
+    dest: "{{ item.dest }}"
+    content: "{{ item.content if item.content | length > 0 else omit }}"
+    src: "{{ item.src if item.content | length == 0 else omit }}"
+    owner: root
+    group: "{{ item.group }}"
+    mode: "{{ item.mode }}"
+  loop:
+    - { dest: "{{ mariadb_tls_cert_path }}", content: "{{ mariadb_tls_cert_content }}", src: "{{ mariadb_tls_cert_src }}", group: root, mode: "0644" }
+    - { dest: "{{ mariadb_tls_key_path }}", content: "{{ mariadb_tls_key_content }}", src: "{{ mariadb_tls_key_src }}", group: mysql, mode: "0640" }
+    - { dest: "{{ mariadb_tls_ca_path }}", content: "{{ mariadb_tls_ca_content }}", src: "{{ mariadb_tls_ca_src }}", group: root, mode: "0644" }
+  loop_control:
+    label: "{{ item.dest }}"
+  when:
+    - mariadb_tls_source == 'provided'
+    - item.content | length > 0 or item.src | length > 0
+  no_log: "{{ item.dest == mariadb_tls_key_path }}"
+  notify: Restart mariadb
+
+# ---------------------------------------------------------------------------
+# Self-signed: a private CA for this server, and a server certificate it signs.
+# Clients verify the server with ca.crt.
+# ---------------------------------------------------------------------------
+- name: Create the self-signed certificates
+  when: mariadb_tls_source == 'selfsigned'
+  block:
+    - name: Create the CA private key
+      community.crypto.openssl_privatekey:
+        path: "{{ mariadb_tls_dir }}/ca.key"
+        type: "{{ mariadb_tls_selfsigned_key_type }}"
+        size: "{{ mariadb_tls_selfsigned_key_size }}"
+        owner: root
+        group: root
+        mode: "0600"
+
+    - name: Create the CA signing request
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ mariadb_tls_dir }}/ca.key"
+        common_name: "MariaDB CA {{ mariadb_tls_selfsigned_common_name }}"
+        use_common_name_for_san: false
+        basic_constraints: ["CA:TRUE", "pathlen:0"]
+        basic_constraints_critical: true
+        key_usage: [keyCertSign, cRLSign]
+        key_usage_critical: true
+        digest: "{{ mariadb_tls_selfsigned_digest }}"
+      register: __mariadb_ca_csr
+      changed_when: false
+
+    - name: Create the CA certificate
+      community.crypto.x509_certificate:
+        path: "{{ mariadb_tls_ca_path }}"
+        csr_content: "{{ __mariadb_ca_csr.csr }}"
+        privatekey_path: "{{ mariadb_tls_dir }}/ca.key"
+        provider: selfsigned
+        selfsigned_digest: "{{ mariadb_tls_selfsigned_digest }}"
+        selfsigned_not_after: "+{{ mariadb_tls_selfsigned_ca_days }}d"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart mariadb
+
+    - name: Create the server private key
+      community.crypto.openssl_privatekey:
+        path: "{{ mariadb_tls_key_path }}"
+        type: "{{ mariadb_tls_selfsigned_key_type }}"
+        size: "{{ mariadb_tls_selfsigned_key_size }}"
+        owner: root
+        group: mysql
+        mode: "0640"
+      notify: Restart mariadb
+
+    - name: Create the server signing request
+      community.crypto.openssl_csr_pipe:
+        privatekey_path: "{{ mariadb_tls_key_path }}"
+        common_name: "{{ mariadb_tls_selfsigned_common_name }}"
+        subject_alt_name: "{{ mariadb_tls_selfsigned_subject_alt_names }}"
+        key_usage: [digitalSignature, keyEncipherment]
+        key_usage_critical: true
+        extended_key_usage: [serverAuth]
+        digest: "{{ mariadb_tls_selfsigned_digest }}"
+      register: __mariadb_server_csr
+      changed_when: false
+
+    - name: Check the server certificate expiry
+      community.crypto.x509_certificate_info:
+        path: "{{ mariadb_tls_cert_path }}"
+        valid_at:
+          renew: "+{{ mariadb_tls_selfsigned_renew_days }}d"
+      register: __mariadb_cert_info
+      failed_when: false
+
+    - name: Issue the server certificate
+      community.crypto.x509_certificate:
+        path: "{{ mariadb_tls_cert_path }}"
+        csr_content: "{{ __mariadb_server_csr.csr }}"
+        provider: ownca
+        ownca_path: "{{ mariadb_tls_ca_path }}"
+        ownca_privatekey_path: "{{ mariadb_tls_dir }}/ca.key"
+        ownca_digest: "{{ mariadb_tls_selfsigned_digest }}"
+        ownca_not_after: "+{{ mariadb_tls_selfsigned_days }}d"
+        force: "{{ not (__mariadb_cert_info.valid_at.renew | default(true)) }}"
+        owner: root
+        group: root
+        mode: "0644"
+      notify: Restart mariadb

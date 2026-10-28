@@ -1,0 +1,35 @@
+---
+# file_key_management has no key versions, so rotation means moving tables to
+# a new key id. INNODB_TABLESPACES_ENCRYPTION shows the key each tablespace
+# really uses; ALTER TABLE ... ENCRYPTION_KEY_ID rebuilds a table with the
+# new key. The system tablespace and redo log always stay on key 1.
+- name: Find InnoDB tables not on the active key
+  community.mysql.mysql_query:
+    query: >-
+      SELECT DISTINCT t.TABLE_SCHEMA, t.TABLE_NAME
+      FROM information_schema.TABLES t
+      JOIN information_schema.INNODB_TABLESPACES_ENCRYPTION e
+        ON e.NAME = CONCAT(t.TABLE_SCHEMA, '/', t.TABLE_NAME)
+        OR e.NAME LIKE CONCAT(t.TABLE_SCHEMA, '/', t.TABLE_NAME, '#P#%')
+      WHERE t.ENGINE = 'InnoDB'
+        AND t.TABLE_TYPE = 'BASE TABLE'
+        AND e.ENCRYPTION_SCHEME = 1
+        AND e.CURRENT_KEY_ID <> %(key_id)s
+        AND t.TABLE_SCHEMA NOT IN %(exclude)s
+    named_args:
+      key_id: "{{ __mariadb_encryption_active_key_id | int }}"
+      exclude: "{{ mariadb_encryption_reencrypt_exclude_schemas }}"
+    login_unix_socket: "{{ mariadb_socket }}"
+  register: __mariadb_stale_tables
+  changed_when: false
+  check_mode: false
+
+- name: Re-encrypt tables with the active key
+  community.mysql.mysql_query:
+    query: >-
+      ALTER TABLE `{{ item.TABLE_SCHEMA | replace('`', '``') }}`.`{{ item.TABLE_NAME | replace('`', '``') }}`
+      ENCRYPTED=YES ENCRYPTION_KEY_ID={{ __mariadb_encryption_active_key_id | int }}
+    login_unix_socket: "{{ mariadb_socket }}"
+  loop: "{{ __mariadb_stale_tables.query_result[0] | default([]) }}"
+  loop_control:
+    label: "{{ item.TABLE_SCHEMA }}.{{ item.TABLE_NAME }}"

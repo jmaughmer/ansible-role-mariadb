@@ -1,0 +1,235 @@
+---
+# ---------------------------------------------------------------------------
+# Packages
+# ---------------------------------------------------------------------------
+# MariaDB comes from the distribution's AppStream repository only.
+# EL8 and EL9 ship MariaDB as dnf module streams; EL10 ships one non-modular
+# version. An empty value uses the per-release default from vars/main.yml
+# (10.11 on every release). Changing the stream of an existing server is a
+# major upgrade: take a dump first, the role refuses to switch streams.
+mariadb_module_stream: ""
+
+mariadb_packages:
+  - mariadb-server
+  - mariadb
+mariadb_extra_packages: []
+
+# ---------------------------------------------------------------------------
+# Service and paths
+# ---------------------------------------------------------------------------
+mariadb_service_enabled: true
+mariadb_service_state: started
+
+mariadb_bind_address: 127.0.0.1
+mariadb_port: 3306
+mariadb_datadir: /var/lib/mysql
+mariadb_socket: /var/lib/mysql/mysql.sock
+mariadb_log_dir: /var/log/mariadb
+mariadb_error_log: "{{ mariadb_log_dir }}/mariadb.log"
+mariadb_pid_file: /run/mariadb/mariadb.pid
+# The drop-in the role writes. Files in /etc/my.cnf.d are read in name
+# order, so this sorts after the package's mariadb-server.cnf.
+mariadb_config_file: /etc/my.cnf.d/90-ansible.cnf
+
+# ---------------------------------------------------------------------------
+# Server settings
+# ---------------------------------------------------------------------------
+mariadb_character_set_server: utf8mb4
+mariadb_collation_server: utf8mb4_unicode_ci
+mariadb_skip_name_resolve: true
+mariadb_max_connections: 151
+mariadb_innodb_buffer_pool_size: 128M
+mariadb_innodb_log_file_size: 96M
+mariadb_innodb_file_per_table: true
+mariadb_sql_mode: STRICT_TRANS_TABLES,ERROR_FOR_DIVISION_BY_ZERO,NO_ENGINE_SUBSTITUTION
+# Extra [mysqld] settings, as a dict. A value of true writes the bare key.
+mariadb_mysqld_options: {}
+# Extra sections, e.g. { client: { default-character-set: utf8mb4 } }.
+mariadb_extra_sections: {}
+
+# ---------------------------------------------------------------------------
+# Databases and users
+# ---------------------------------------------------------------------------
+# root@localhost authenticates with unix_socket only, so it has no password
+# and can only be used by the OS root user. The role logs in that way.
+mariadb_remove_anonymous_users: true
+mariadb_remove_test_database: true
+mariadb_remove_remote_root: true
+
+# - name: kea
+#   encoding: utf8mb4        # optional
+#   collation: utf8mb4_unicode_ci
+#   state: present
+mariadb_databases: []
+
+# - name: kea
+#   host: "10.0.0.%"
+#   password: "{{ vault_kea_db_password }}"
+#   priv: "kea.*:ALL"
+#   tls_requires: SSL        # optional; defaults to mariadb_user_tls_requires
+#   state: present
+#   update_password: always  # or on_create
+mariadb_users: []
+
+# TLS requirement for users connecting over TCP when an entry does not set
+# tls_requires. "SSL" forces TLS, "X509" forces a client certificate, and an
+# empty string leaves the account without a requirement.
+mariadb_user_tls_requires: "{{ 'SSL' if mariadb_tls_enabled | bool else '' }}"
+
+# ---------------------------------------------------------------------------
+# DISA STIG hardening
+# ---------------------------------------------------------------------------
+# Settings from the DISA MariaDB Enterprise 10.x STIG that apply to the
+# AppStream build. Each one can be tuned on its own below.
+mariadb_stig_enabled: true
+
+# Audit logging with the server_audit plugin, loaded FORCE_PLUS_PERMANENT so
+# it cannot be uninstalled at run time.
+mariadb_audit_enabled: "{{ mariadb_stig_enabled }}"
+mariadb_audit_events: CONNECT,QUERY_DDL,QUERY_DCL
+mariadb_audit_output_type: file          # or syslog
+mariadb_audit_file_path: "{{ mariadb_log_dir }}/server_audit.log"
+mariadb_audit_file_rotate_size: 104857600
+mariadb_audit_file_rotations: 30
+mariadb_audit_syslog_facility: LOG_AUTHPRIV
+mariadb_audit_incl_users: ""
+mariadb_audit_excl_users: ""
+
+# Password complexity with simple_password_check.
+mariadb_password_check_enabled: "{{ mariadb_stig_enabled }}"
+mariadb_password_minimal_length: 15
+mariadb_password_minimal_digits: 1
+mariadb_password_minimal_letters_same_case: 1
+mariadb_password_minimal_special_chars: 1
+# Lock an account after this many failed logins in a row (0 = off).
+# FLUSH PRIVILEGES unlocks it.
+mariadb_max_password_errors: "{{ 3 if mariadb_stig_enabled | bool else 0 }}"
+# Days before passwords expire (0 = never). The STIG asks for 60 days on
+# interactive accounts; service accounts usually need PASSWORD EXPIRE NEVER.
+mariadb_default_password_lifetime: 0
+
+mariadb_local_infile: "{{ not mariadb_stig_enabled | bool }}"
+mariadb_symbolic_links: "{{ not mariadb_stig_enabled | bool }}"
+# Directory LOAD DATA / SELECT INTO OUTFILE are confined to ("" = no limit).
+mariadb_secure_file_priv: "{{ '/var/lib/mysql-files' if mariadb_stig_enabled | bool else '' }}"
+# Idle session timeout in seconds.
+mariadb_wait_timeout: "{{ 600 if mariadb_stig_enabled | bool else 28800 }}"
+mariadb_interactive_timeout: "{{ mariadb_wait_timeout }}"
+# Concurrent sessions per account (0 = unlimited).
+mariadb_max_user_connections: 0
+mariadb_log_warnings: 2
+mariadb_datadir_mode: "0750"
+mariadb_log_dir_mode: "0750"
+
+# ---------------------------------------------------------------------------
+# TLS
+# ---------------------------------------------------------------------------
+mariadb_tls_enabled: true
+# selfsigned: the role creates a private CA and a server certificate.
+# provided: you supply the certificate, key and CA (content or files).
+mariadb_tls_source: selfsigned
+mariadb_tls_dir: /etc/pki/mariadb
+mariadb_tls_cert_path: "{{ mariadb_tls_dir }}/server.crt"
+mariadb_tls_key_path: "{{ mariadb_tls_dir }}/server.key"
+mariadb_tls_ca_path: "{{ mariadb_tls_dir }}/ca.crt"
+# Refuse plain-text TCP connections. Unix socket connections still work.
+mariadb_require_secure_transport: "{{ mariadb_tls_enabled | bool }}"
+mariadb_tls_version: TLSv1.2,TLSv1.3
+# Empty follows the system crypto policy, which is what you want under FIPS.
+mariadb_tls_cipher: ""
+
+# provided: PEM content (from Ansible Vault) or a file on the controller.
+mariadb_tls_cert_content: ""
+mariadb_tls_key_content: ""
+mariadb_tls_ca_content: ""
+mariadb_tls_cert_src: ""
+mariadb_tls_key_src: ""
+mariadb_tls_ca_src: ""
+
+# selfsigned: FIPS-approved defaults (RSA 3072, SHA-256).
+mariadb_tls_selfsigned_common_name: "{{ ansible_facts['fqdn'] }}"
+mariadb_tls_selfsigned_subject_alt_names:
+  - "DNS:{{ ansible_facts['fqdn'] }}"
+  - "DNS:{{ ansible_facts['hostname'] }}"
+  - DNS:localhost
+  - IP:127.0.0.1
+mariadb_tls_selfsigned_key_type: RSA
+mariadb_tls_selfsigned_key_size: 3072
+mariadb_tls_selfsigned_digest: sha256
+mariadb_tls_selfsigned_ca_days: 3650
+mariadb_tls_selfsigned_days: 825
+# Re-issue the server certificate when it expires within this many days.
+mariadb_tls_selfsigned_renew_days: 30
+
+# ---------------------------------------------------------------------------
+# Data-at-rest encryption
+# ---------------------------------------------------------------------------
+# Uses the file_key_management plugin. Key 1 always protects the system
+# tablespace, redo log and binary logs, so it can never be removed. Tables are encrypted with mariadb_encryption_key_id.
+mariadb_encryption_enabled: false
+mariadb_encryption_dir: /etc/mysql/encryption
+
+# Keys as [{ id: 1, key: "<64 hex chars>" }, ...], normally from Vault.
+# Leave empty to have the role generate and keep keys on the host.
+mariadb_encryption_keys: []
+
+# Key id new and re-encrypted tables use. 0 = the highest key id.
+mariadb_encryption_key_id: 0
+
+# Generated keys only: set to true for one run (-e mariadb_encryption_rotate=true)
+# to add a new key and make it the active one.
+mariadb_encryption_rotate: false
+
+# After the active key changes, rebuild InnoDB tables with ALTER TABLE ...
+# ENCRYPTION_KEY_ID so they move to the new key. This rewrites each table.
+mariadb_encryption_reencrypt: true
+# Schemas left alone when re-encrypting.
+mariadb_encryption_reencrypt_exclude_schemas: [mysql, information_schema, performance_schema, sys]
+
+# Encrypt the key file itself with a separate file key (AES-256-CBC).
+mariadb_encryption_keyfile_encrypted: true
+mariadb_encryption_algorithm: AES_CBC     # or AES_CTR
+
+mariadb_encryption_innodb_tables: "ON"    # ON or FORCE
+mariadb_encryption_innodb_log: true
+mariadb_encryption_innodb_temporary_tables: true
+mariadb_encryption_threads: 4
+mariadb_encryption_tmp_files: true
+mariadb_encryption_tmp_disk_tables: true
+mariadb_encryption_binlog: true
+mariadb_encryption_aria_tables: true
+
+# ---------------------------------------------------------------------------
+# Firewall
+# ---------------------------------------------------------------------------
+# Only acts when firewalld is running and the server listens beyond loopback.
+mariadb_firewalld_manage: true
+mariadb_firewalld_zone: public
+# Limit access to these source networks with rich rules; empty opens the port.
+mariadb_firewalld_sources: []
+
+# ---------------------------------------------------------------------------
+# SELinux
+# ---------------------------------------------------------------------------
+mariadb_selinux_manage: true
+mariadb_selinux_booleans: {}
+# Extra contexts: [{ target: "/srv/backup(/.*)?", setype: mysqld_db_t }]
+mariadb_selinux_fcontexts: []
+
+# ---------------------------------------------------------------------------
+# fapolicyd
+# ---------------------------------------------------------------------------
+# Everything the role installs comes from RPMs, which fapolicyd trusts. List
+# any files you add outside RPMs (plugins, helper scripts) to trust them.
+mariadb_fapolicyd_manage: true
+mariadb_fapolicyd_trust_file: mariadb
+mariadb_fapolicyd_trusted_files: []
+
+# ---------------------------------------------------------------------------
+# FIPS
+# ---------------------------------------------------------------------------
+# Fail when the host is not in FIPS mode (the role does not enable FIPS:
+# that needs fips-mode-setup or a FIPS install, and a reboot).
+mariadb_fips_required: false
+# Set the system crypto policy (FIPS, FIPS:OSPP, DEFAULT...). Empty leaves it.
+mariadb_crypto_policy: ""
