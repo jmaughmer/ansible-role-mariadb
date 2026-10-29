@@ -15,6 +15,9 @@ __mariadb_python_packages: [python3-PyMySQL]
 
 __mariadb_tls_packages: [python3-cryptography]
 
+# The key file tasks run openssl, which minimal images (AlmaLinux 10) lack.
+__mariadb_encryption_packages: [openssl]
+
 __mariadb_keyfile: "{{ mariadb_encryption_dir }}/keyfile"
 __mariadb_keyfile_enc: "{{ mariadb_encryption_dir }}/keyfile.enc"
 __mariadb_filekey: "{{ mariadb_encryption_dir }}/keyfile.key"

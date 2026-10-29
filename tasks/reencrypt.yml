@@ -10,7 +10,7 @@
       FROM information_schema.TABLES t
       JOIN information_schema.INNODB_TABLESPACES_ENCRYPTION e
         ON e.NAME = CONCAT(t.TABLE_SCHEMA, '/', t.TABLE_NAME)
-        OR e.NAME LIKE CONCAT(t.TABLE_SCHEMA, '/', t.TABLE_NAME, '#P#%')
+        OR e.NAME LIKE CONCAT(t.TABLE_SCHEMA, '/', t.TABLE_NAME, '#P#%%')
       WHERE t.ENGINE = 'InnoDB'
         AND t.TABLE_TYPE = 'BASE TABLE'
         AND e.ENCRYPTION_SCHEME = 1

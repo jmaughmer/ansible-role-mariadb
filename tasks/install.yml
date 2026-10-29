@@ -36,7 +36,8 @@
   ansible.builtin.dnf:
     name: >-
       {{ mariadb_packages + mariadb_extra_packages + __mariadb_python_packages
-         + (__mariadb_tls_packages if mariadb_tls_enabled | bool else []) }}
+         + (__mariadb_tls_packages if mariadb_tls_enabled | bool else [])
+         + (__mariadb_encryption_packages if mariadb_encryption_enabled | bool else []) }}
     state: present
 
 # The package can be a virtual provide (EL10), so ask rpm for whatever provides it.

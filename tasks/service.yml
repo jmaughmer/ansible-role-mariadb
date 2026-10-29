@@ -6,6 +6,17 @@
     enabled: "{{ mariadb_service_enabled }}"
   register: __mariadb_service
 
+# mariadb-prepare-db-dir sets the data directory to 0755 when it initializes
+# an empty one on the first start, undoing config.yml.
+- name: Restore the data directory mode after initialization
+  ansible.builtin.file:
+    path: "{{ mariadb_datadir }}"
+    state: directory
+    owner: mysql
+    group: mysql
+    mode: "{{ mariadb_datadir_mode }}"
+  when: mariadb_datadir | length > 0
+
 # A restart queued by configuration changes is redundant right after the
 # first start, but harmless; flushing makes new settings live before the SQL
 # tasks below run.

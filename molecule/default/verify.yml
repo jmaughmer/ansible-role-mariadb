@@ -39,7 +39,7 @@
           - v.secure_file_priv.rstrip('/') == '/var/lib/mysql-files'
           - v.wait_timeout == '600'
           - "'TLSv1.0' not in v.tls_version and 'TLSv1.1' not in v.tls_version"
-        fail_msg: "{{ v }}"
+        fail_msg: "{{ v | to_json }}"
 
     - name: Assert anonymous users and the test database are gone
       community.mysql.mysql_query:

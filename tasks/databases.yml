@@ -10,17 +10,75 @@
   loop_control:
     label: "{{ item.name }}"
 
+# Passwords are set here in plain text, so simple_password_check can test
+# them. mysql_user sends a pre-hashed password, which MariaDB refuses while
+# strict_password_validation is on (the default once a password plugin is
+# loaded). Passwords are compared as mysql_native_password hashes.
+- name: Read existing users and whether their passwords match
+  community.mysql.mysql_query:
+    query: >-
+      SELECT COUNT(*) AS present,
+             COALESCE(MAX(authentication_string = CONCAT('*', UPPER(SHA1(UNHEX(SHA1(%s)))))), 0) AS matches
+      FROM mysql.user WHERE User = %s AND Host = %s
+    positional_args:
+      - "{{ item.password | default('') }}"
+      - "{{ item.name }}"
+      - "{{ item.host | default('localhost') }}"
+    login_unix_socket: "{{ mariadb_socket }}"
+  loop: "{{ mariadb_users | rejectattr('state', 'defined') | list
+            + mariadb_users | selectattr('state', 'defined') | selectattr('state', '==', 'present') | list }}"
+  loop_control:
+    label: "{{ item.name }}@{{ item.host | default('localhost') }}"
+  register: __mariadb_user_state
+  changed_when: false
+  check_mode: false
+  no_log: true
+
+- name: Create users
+  community.mysql.mysql_query:
+    query: "CREATE USER %s@%s{{ ' IDENTIFIED BY %s' if item.item.password is defined else '' }}"
+    positional_args: "{{ [item.item.name, item.item.host | default('localhost')]
+                         + ([item.item.password] if item.item.password is defined else []) }}"
+    login_unix_socket: "{{ mariadb_socket }}"
+  loop: "{{ __mariadb_user_state.results }}"
+  loop_control:
+    label: "{{ item.item.name }}@{{ item.item.host | default('localhost') }}"
+  when: item.query_result[0][0].present | int == 0
+  no_log: true
+
+# update_password: on_create (or on_new_username) leaves existing passwords alone.
+- name: Update passwords
+  community.mysql.mysql_query:
+    query: ALTER USER %s@%s IDENTIFIED BY %s
+    positional_args:
+      - "{{ item.item.name }}"
+      - "{{ item.item.host | default('localhost') }}"
+      - "{{ item.item.password }}"
+    login_unix_socket: "{{ mariadb_socket }}"
+  loop: "{{ __mariadb_user_state.results }}"
+  loop_control:
+    label: "{{ item.item.name }}@{{ item.item.host | default('localhost') }}"
+  when:
+    - item.item.password is defined
+    - item.item.update_password | default('always') == 'always'
+    - item.query_result[0][0].present | int > 0
+    - item.query_result[0][0].matches | int == 0
+  no_log: true
+
+# Privileges, TLS requirements and removals; passwords are handled above.
 # Accounts for remote hosts get mariadb_user_tls_requires unless the entry
 # sets tls_requires. Socket logins never use TLS, so localhost is exempt.
+# tls_requires may be a string (SSL, X509) or a dict (SUBJECT, ISSUER, CIPHER).
 - name: Manage users
   community.mysql.mysql_user:
     name: "{{ item.name }}"
     host: "{{ item.host | default('localhost') }}"
-    password: "{{ item.password | default(omit) }}"
     priv: "{{ item.priv | default(omit) }}"
     append_privs: "{{ item.append_privs | default(false) }}"
-    tls_requires: "{{ __mariadb_tls_requires if __mariadb_tls_requires | length > 0 else omit }}"
-    update_password: "{{ item.update_password | default('always') }}"
+    tls_requires: >-
+      {{ omit if __mariadb_tls_requires | length == 0
+         else __mariadb_tls_requires if __mariadb_tls_requires is mapping
+         else {__mariadb_tls_requires | upper: none} }}
     state: "{{ item.state | default('present') }}"
     login_unix_socket: "{{ mariadb_socket }}"
     column_case_sensitive: true
