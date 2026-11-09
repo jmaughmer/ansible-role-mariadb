@@ -6,7 +6,7 @@ Features:
 
 - MariaDB 10.11 from AppStream: the `mariadb:10.11` module stream on EL8 and EL9, the stock packages on EL10. MariaDB.org repositories are never used.
 - Hardening based on the DISA MariaDB Enterprise 10.x STIG: audit logging, password complexity, account lockout, idle session timeouts, no `LOAD DATA LOCAL`, no symbolic links, a confined `secure_file_priv`, restrictive file modes, and removal of anonymous users, remote root and the test database.
-- TLS with a supplied certificate or a self-signed CA and server certificate the role creates. TLS 1.2+ only, and plain-text TCP is refused.
+- TLS with a certificate from `ssl_certificates`, the list the Apache, phpIPAM and Kea roles also read, or a self-signed CA and server certificate the role creates. TLS 1.2+ only, and plain-text TCP is refused.
 - Data-at-rest encryption with the `file_key_management` plugin, covering InnoDB tables, redo log, temporary files, binary logs and Aria tables. The key file can itself be encrypted, and keys can be rotated.
 - Databases and users, with TLS required for remote accounts.
 - SELinux labeling for relocated directories and ports, a fapolicyd trust file for any non-RPM files, and FIPS checks.
@@ -71,7 +71,7 @@ Set `mariadb_module_stream` to pick another stream on EL8/EL9 (10.5 is the minim
 | `symbolic-links` | `mariadb_symbolic_links` | off |
 | `secure_file_priv` | `mariadb_secure_file_priv` | `/var/lib/mysql-files` |
 | TLS 1.2+, `require_secure_transport` | `mariadb_tls_*` | on |
-| Data directory / log directory modes | `mariadb_datadir_mode`, `mariadb_log_dir_mode` | `0750` |
+| Data directory / log directory modes | `mariadb_datadir_mode`, `mariadb_log_dir_mode` | `0750` (phpMyAdmin needs `0751` to reach the socket) |
 | Remove anonymous users, remote root, `test` | `mariadb_remove_*` | on |
 
 Passwords you set through `mariadb_users` have to meet the complexity rules, or MariaDB rejects them.
@@ -87,12 +87,27 @@ mariadb_tls_selfsigned_subject_alt_names:
   - DNS:db01.corp.example.com
   - IP:10.0.0.20
 
-# Supplied: PEM content (from Vault) or files on the controller.
+# Supplied: the same ssl_certificates list the Apache, phpIPAM and Kea roles read.
 mariadb_tls_source: provided
-mariadb_tls_cert_content: "{{ vault_db_cert }}"
-mariadb_tls_key_content: "{{ vault_db_key }}"
-mariadb_tls_ca_src: files/corp-ca.pem
+ssl_certificates:
+  - name: db01.corp.example.com
+    certificate:
+      content: |
+        -----BEGIN CERTIFICATE-----
+        ...
+        -----END CERTIFICATE-----
+    key:
+      content: !vault |
+        $ANSIBLE_VAULT;1.1;AES256
+        ...
+mariadb_tls_ca_content: "{{ lookup('file', 'files/corp-ca.pem') }}"   # or mariadb_tls_ca_src
 ```
+
+The role uses `mariadb_tls_certificate` if you set it, then the entry named after the host's FQDN, then the first entry. It writes only that entry, as `/etc/pki/mariadb/<name>.crt` (0644) and `<name>.key` (`root:mysql` 0640), with `server.crt` and `server.key` linking to them. Put any intermediate certificates in `certificate.content`, after the server certificate. `ssl_certificates` has no CA field, so the CA stays in `mariadb_tls_ca_content` or `mariadb_tls_ca_src`.
+
+Encrypt each key with Ansible Vault (`ansible-vault encrypt_string --stdin-name content < server.key`). Before writing anything, the role checks that the certificate and key are valid PEM, the key has no passphrase, the key belongs to the certificate, and the certificate hasn't expired. If a check fails, the run stops with the existing files and the running server untouched. Keys stay out of the output, including with `-vvv` and `--diff`.
+
+`ssl_certificates` replaces `mariadb_tls_cert_content`, `mariadb_tls_key_content`, `mariadb_tls_cert_src` and `mariadb_tls_key_src`. A run with `mariadb_tls_source: provided` and no entries fails and says so. Switching back to `selfsigned` replaces the links and leaves the supplied files in place; delete them yourself if you no longer want them on the host.
 
 Files go to `/etc/pki/mariadb` (`server.crt`, `server.key`, `ca.crt`). The self-signed server certificate is re-issued when it is within `mariadb_tls_selfsigned_renew_days` (30) of expiry. Clients verify the server with `ca.crt`:
 
@@ -163,6 +178,7 @@ See [`defaults/main.yml`](defaults/main.yml) for every variable with comments. T
 | `mariadb_mysqld_options` | `{}` | Extra `[mysqld]` settings |
 | `mariadb_stig_enabled` | `true` | STIG settings |
 | `mariadb_tls_enabled` / `mariadb_tls_source` | `true` / `selfsigned` | TLS |
+| `ssl_certificates` / `mariadb_tls_certificate` | `[]` / `""` | Supplied certificates, and the entry to use |
 | `mariadb_encryption_enabled` | `false` | Data-at-rest encryption |
 | `mariadb_encryption_rotate` | `false` | One-shot key rotation |
 | `mariadb_fips_required` | `false` | Fail unless FIPS is on |

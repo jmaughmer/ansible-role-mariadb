@@ -1,0 +1,80 @@
+---
+# The certificate and key come from the ssl_certificates list the Apache, phpIPAM
+# and Kea roles also read. Only the entry in use is written here, because the
+# mysql group can read what is in this directory.
+
+# The pair is checked before any file is written, so a bad one can't stop
+# MariaDB at its next restart.
+- name: Read the supplied certificate
+  community.crypto.x509_certificate_info:
+    content: "{{ __mariadb_tls_entry.certificate.content }}"
+  register: __mariadb_ssl_cert_info
+  failed_when: false
+
+- name: Read the supplied private key
+  community.crypto.openssl_privatekey_info:
+    content: "{{ __mariadb_tls_entry.key.content }}"
+  register: __mariadb_ssl_key_info
+  failed_when: false
+  no_log: true
+
+- name: Check the key belongs to the certificate
+  ansible.builtin.assert:
+    that:
+      - __mariadb_ssl_cert_info.public_key is defined
+      - __mariadb_ssl_key_info.public_key is defined
+      - __mariadb_ssl_cert_info.public_key == __mariadb_ssl_key_info.public_key
+      - not __mariadb_ssl_cert_info.expired
+    fail_msg: >-
+      ssl_certificates entry {{ __mariadb_tls_certificate }}:
+      {{ 'the certificate is not valid PEM' if __mariadb_ssl_cert_info.public_key is not defined
+         else 'the key is not valid PEM or has a passphrase, which MariaDB cannot prompt for' if __mariadb_ssl_key_info.public_key is not defined
+         else 'the key does not match the certificate' if __mariadb_ssl_cert_info.public_key != __mariadb_ssl_key_info.public_key
+         else 'the certificate has expired' }}.
+    quiet: true
+
+- name: Install the certificate
+  ansible.builtin.copy:
+    dest: "{{ mariadb_tls_dir }}/{{ __mariadb_tls_certificate }}.crt"
+    content: "{{ __mariadb_tls_entry.certificate.content }}"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart mariadb
+
+- name: Install the private key
+  ansible.builtin.copy:
+    dest: "{{ mariadb_tls_dir }}/{{ __mariadb_tls_certificate }}.key"
+    content: "{{ __mariadb_tls_entry.key.content }}"
+    owner: root
+    group: mysql
+    mode: "0640"
+  no_log: true
+  diff: false
+  notify: Restart mariadb
+
+# MariaDB and its clients keep the same paths whichever certificate source is used.
+- name: Link the certificate paths
+  ansible.builtin.file:
+    path: "{{ item.path }}"
+    src: "{{ item.src }}"
+    state: link
+    force: true
+  loop:
+    - { path: "{{ mariadb_tls_cert_path }}", src: "{{ mariadb_tls_dir }}/{{ __mariadb_tls_certificate }}.crt" }
+    - { path: "{{ mariadb_tls_key_path }}", src: "{{ mariadb_tls_dir }}/{{ __mariadb_tls_certificate }}.key" }
+  loop_control:
+    label: "{{ item.path }}"
+  when: item.path != item.src
+  notify: Restart mariadb
+
+- name: Install the CA certificate
+  ansible.builtin.copy:
+    dest: "{{ mariadb_tls_ca_path }}"
+    content: "{{ mariadb_tls_ca_content if mariadb_tls_ca_content | length > 0 else omit }}"
+    src: "{{ mariadb_tls_ca_src if mariadb_tls_ca_content | length == 0 else omit }}"
+    owner: root
+    group: root
+    mode: "0644"
+  when: mariadb_tls_ca_content | length > 0 or mariadb_tls_ca_src | length > 0
+  notify: Restart mariadb

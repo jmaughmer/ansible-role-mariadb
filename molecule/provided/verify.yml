@@ -1,0 +1,221 @@
+---
+- name: Verify
+  hosts: all
+  vars_files:
+    - vars/main.yml
+    - vars/vault.yml
+  vars:
+    tls_dir: /etc/pki/mariadb
+    fqdn_crt: "{{ tls_dir }}/{{ ansible_fqdn }}.crt"
+    fqdn_key: "{{ tls_dir }}/{{ ansible_fqdn }}.key"
+    app_crt: "{{ tls_dir }}/app.example.test.crt"
+    supplied_files: "{{ [fqdn_crt, fqdn_key] }}"
+  tasks:
+    # Kept once as plain facts, because the refusal tests below replace
+    # ssl_certificates itself.
+    - name: Keep PEM for building pairs the role must refuse
+      ansible.builtin.set_fact:
+        app_cert_pem: "{{ (ssl_certificates | selectattr('name', 'eq', 'app.example.test') | first).certificate.content }}"
+        app_key_pem: "{{ (ssl_certificates | selectattr('name', 'eq', 'app.example.test') | first).key.content }}"
+        shared_key_pem: "{{ (ssl_certificates | selectattr('name', 'eq', 'shared.example.test') | first).key.content }}"
+      no_log: true
+
+    # ---------------------------------------------------------------------------
+    # What converge left behind
+    # ---------------------------------------------------------------------------
+    - name: Read the supplied files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ supplied_files }}"
+      register: installed
+
+    - name: Assert the certificate is public and the key is for root and mysql only
+      ansible.builtin.assert:
+        that:
+          - installed.results[0].stat.mode == '0644'
+          - installed.results[0].stat.gr_name == 'root'
+          - installed.results[1].stat.mode == '0640'
+          - installed.results[1].stat.pw_name == 'root'
+          - installed.results[1].stat.gr_name == 'mysql'
+        quiet: true
+
+    - name: Read the files for the other entries
+      ansible.builtin.stat:
+        path: "{{ tls_dir }}/{{ item }}"
+      loop: [app.example.test.key, shared.example.test.key]
+      register: others
+
+    - name: Assert keys for entries not in use were not written
+      ansible.builtin.assert:
+        that: others.results | selectattr('stat.exists') | list | length == 0
+        quiet: true
+
+    - name: Read the certificate paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: ["{{ tls_dir }}/server.crt", "{{ tls_dir }}/server.key"]
+      register: links
+
+    - name: Assert they link to the entry named after the FQDN
+      ansible.builtin.assert:
+        that:
+          - links.results[0].stat.islnk and links.results[0].stat.lnk_source == fqdn_crt
+          - links.results[1].stat.islnk and links.results[1].stat.lnk_source == fqdn_key
+        quiet: true
+
+    - name: Check the supplied certificate is served
+      ansible.builtin.include_tasks: tasks/served_cert.yml
+      vars:
+        file: "{{ fqdn_crt }}"
+
+    - name: Log in with the name and CA checked
+      ansible.builtin.command: >-
+        mariadb --protocol=TCP -h default.example.test -u app -pMolecule-Passw0rd!Remote
+        --ssl --ssl-ca={{ tls_dir }}/ca.crt --ssl-verify-server-cert -N
+        -e "SHOW STATUS LIKE 'Ssl_version'"
+      register: tls_login
+      changed_when: false
+      failed_when: tls_login.rc != 0 or 'TLSv1.' not in tls_login.stdout
+
+    # ---------------------------------------------------------------------------
+    # Configurations the role must refuse
+    # ---------------------------------------------------------------------------
+    - name: Fingerprint the installed files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ supplied_files }}"
+      register: before_rejects
+
+    - name: Refuse an empty list
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: assert.yml
+        expected: at least one entry
+        ssl_certificates: []
+
+    - name: Refuse a name that isn't safe as a file name
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: assert.yml
+        expected: safe as a file name
+        ssl_certificates:
+          - { name: ../evil, certificate: { content: x }, key: { content: x } }
+
+    - name: Refuse an entry with no key
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: assert.yml
+        expected: key.content
+        ssl_certificates:
+          - { name: nokey, certificate: { content: x } }
+
+    - name: Refuse a chosen certificate that isn't listed
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: assert.yml
+        expected: mariadb_tls_certificate must be
+        mariadb_tls_certificate: missing
+
+    - name: Refuse a certificate that isn't PEM
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: tls_provided.yml
+        expected: the certificate is not valid PEM
+        ssl_certificates:
+          - name: app.example.test
+            certificate: { content: not a certificate }
+            key: { content: "{{ app_key_pem }}" }
+
+    - name: Refuse a key that isn't PEM
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: tls_provided.yml
+        expected: the key is not valid PEM
+        ssl_certificates:
+          - name: app.example.test
+            certificate: { content: "{{ app_cert_pem }}" }
+            key: { content: not a key }
+
+    - name: Refuse a key from another certificate
+      ansible.builtin.include_tasks: tasks/expect_failure.yml
+      vars:
+        role_tasks: tls_provided.yml
+        expected: does not match
+        ssl_certificates:
+          - name: app.example.test
+            certificate: { content: "{{ app_cert_pem }}" }
+            key: { content: "{{ shared_key_pem }}" }
+
+    - name: Fingerprint the installed files again
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ supplied_files }}"
+      register: after_rejects
+
+    - name: Assert the refused pairs changed no files and wrote none
+      ansible.builtin.assert:
+        that: after_rejects.results | map(attribute='stat.checksum') | list == before_rejects.results | map(attribute='stat.checksum') | list
+        quiet: true
+
+    - name: Read where a refused pair would have gone
+      ansible.builtin.stat:
+        path: "{{ app_crt }}"
+      register: stray
+
+    - name: Assert it was not written
+      ansible.builtin.assert:
+        that: not stray.stat.exists
+        quiet: true
+
+    # ---------------------------------------------------------------------------
+    # Moving between sources
+    # ---------------------------------------------------------------------------
+    - name: Switch to a self-signed certificate
+      ansible.builtin.include_role:
+        name: ansible-role-mariadb
+      vars:
+        mariadb_tls_source: selfsigned
+
+    - name: Read the certificate paths and supplied files
+      ansible.builtin.stat:
+        path: "{{ item }}"
+      loop: "{{ [tls_dir ~ '/server.crt', tls_dir ~ '/server.key'] + supplied_files }}"
+      register: switched
+
+    - name: Assert the links were replaced and the supplied files left alone
+      ansible.builtin.assert:
+        that:
+          - not switched.results[0].stat.islnk
+          - not switched.results[1].stat.islnk
+          - switched.results[2:] | map(attribute='stat.checksum') | list == before_rejects.results | map(attribute='stat.checksum') | list
+        quiet: true
+
+    - name: Check the self-signed certificate is served
+      ansible.builtin.include_tasks: tasks/served_cert.yml
+      vars:
+        file: "{{ tls_dir }}/server.crt"
+
+    - name: Switch back, choosing another entry
+      ansible.builtin.include_role:
+        name: ansible-role-mariadb
+      vars:
+        mariadb_tls_certificate: app.example.test
+
+    - name: Read the certificate path
+      ansible.builtin.stat:
+        path: "{{ tls_dir }}/server.crt"
+      register: chosen
+
+    - name: Assert it links to the chosen entry
+      ansible.builtin.assert:
+        that: chosen.stat.islnk and chosen.stat.lnk_source == app_crt
+        quiet: true
+
+    - name: Check the chosen certificate is served
+      ansible.builtin.include_tasks: tasks/served_cert.yml
+      vars:
+        file: "{{ app_crt }}"
+
+    - name: Go back to the converged configuration
+      ansible.builtin.include_role:
+        name: ansible-role-mariadb

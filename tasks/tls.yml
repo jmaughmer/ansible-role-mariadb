@@ -10,25 +10,9 @@
 # ---------------------------------------------------------------------------
 # Supplied certificate
 # ---------------------------------------------------------------------------
-- name: Install the supplied certificate files
-  ansible.builtin.copy:
-    dest: "{{ item.dest }}"
-    content: "{{ item.content if item.content | length > 0 else omit }}"
-    src: "{{ item.src if item.content | length == 0 else omit }}"
-    owner: root
-    group: "{{ item.group }}"
-    mode: "{{ item.mode }}"
-  loop:
-    - { dest: "{{ mariadb_tls_cert_path }}", content: "{{ mariadb_tls_cert_content }}", src: "{{ mariadb_tls_cert_src }}", group: root, mode: "0644" }
-    - { dest: "{{ mariadb_tls_key_path }}", content: "{{ mariadb_tls_key_content }}", src: "{{ mariadb_tls_key_src }}", group: mysql, mode: "0640" }
-    - { dest: "{{ mariadb_tls_ca_path }}", content: "{{ mariadb_tls_ca_content }}", src: "{{ mariadb_tls_ca_src }}", group: root, mode: "0644" }
-  loop_control:
-    label: "{{ item.dest }}"
-  when:
-    - mariadb_tls_source == 'provided'
-    - item.content | length > 0 or item.src | length > 0
-  no_log: "{{ item.dest == mariadb_tls_key_path }}"
-  notify: Restart mariadb
+- name: Install the supplied certificate
+  ansible.builtin.import_tasks: tls_provided.yml
+  when: mariadb_tls_source == 'provided'
 
 # ---------------------------------------------------------------------------
 # Self-signed: a private CA for this server, and a server certificate it signs.
@@ -37,6 +21,25 @@
 - name: Create the self-signed certificates
   when: mariadb_tls_source == 'selfsigned'
   block:
+    # The provided source leaves links at these paths. Writing through a link
+    # would overwrite the supplied file it points to.
+    - name: Look for links at the certificate paths
+      ansible.builtin.stat:
+        path: "{{ item }}"
+        get_checksum: false
+      loop:
+        - "{{ mariadb_tls_cert_path }}"
+        - "{{ mariadb_tls_key_path }}"
+      register: __mariadb_tls_paths
+
+    - name: Remove links left by the provided source
+      ansible.builtin.file:
+        path: "{{ item.stat.path }}"
+        state: absent
+      loop: "{{ __mariadb_tls_paths.results | selectattr('stat.islnk', 'defined') | selectattr('stat.islnk') | list }}"
+      loop_control:
+        label: "{{ item.stat.path }}"
+
     - name: Create the CA private key
       community.crypto.openssl_privatekey:
         path: "{{ mariadb_tls_dir }}/ca.key"

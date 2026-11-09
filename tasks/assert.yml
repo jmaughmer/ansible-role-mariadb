@@ -9,20 +9,46 @@
       {{ ansible_facts['distribution'] }} {{ ansible_facts['distribution_version'] }}.
     quiet: true
 
-- name: Assert TLS settings
+- name: Assert the certificate source
   when: mariadb_tls_enabled | bool
   ansible.builtin.assert:
-    that:
-      - mariadb_tls_source in ['selfsigned', 'provided']
-      - >-
-        mariadb_tls_source != 'provided' or
-        ((mariadb_tls_cert_content | length > 0 or mariadb_tls_cert_src | length > 0) and
-         (mariadb_tls_key_content | length > 0 or mariadb_tls_key_src | length > 0))
-    fail_msg: >-
-      mariadb_tls_source must be "selfsigned" or "provided". With "provided", set
-      mariadb_tls_cert_content or mariadb_tls_cert_src, and mariadb_tls_key_content
-      or mariadb_tls_key_src (the CA is optional).
+    that: mariadb_tls_source in ['selfsigned', 'provided']
+    fail_msg: mariadb_tls_source must be "selfsigned" or "provided".
     quiet: true
+
+# These run on the list as a whole, with filters, so that no result holds a key.
+- name: Assert the supplied certificates
+  when:
+    - mariadb_tls_enabled | bool
+    - mariadb_tls_source == 'provided'
+  block:
+    - name: Assert the supplied certificates are listed
+      ansible.builtin.assert:
+        that: ssl_certificates | length > 0
+        fail_msg: >-
+          mariadb_tls_source "provided" needs at least one entry in ssl_certificates, each with
+          name, certificate.content and key.content. ssl_certificates replaces
+          mariadb_tls_cert_content, mariadb_tls_key_content, mariadb_tls_cert_src and
+          mariadb_tls_key_src.
+        quiet: true
+
+    - name: Assert the supplied certificate entries
+      ansible.builtin.assert:
+        that:
+          - ssl_certificates | selectattr('certificate.content', 'undefined') | list | length == 0
+          - ssl_certificates | selectattr('key.content', 'undefined') | list | length == 0
+          - __mariadb_ssl_certificate_names | reject('match', __mariadb_ssl_certificate_name_pattern) | list | length == 0
+          - __mariadb_ssl_certificate_names | unique | length == __mariadb_ssl_certificate_names | length
+        fail_msg: >-
+          Every entry in ssl_certificates needs certificate.content, key.content and a unique name
+          that is safe as a file name (letters, digits, and . _ - *; no slashes, spaces or "..").
+        quiet: true
+
+    - name: Assert the chosen certificate is listed
+      ansible.builtin.assert:
+        that: __mariadb_tls_certificate in __mariadb_ssl_certificate_names
+        fail_msg: mariadb_tls_certificate must be the name of an entry in ssl_certificates.
+        quiet: true
 
 - name: Assert supplied encryption keys
   when:

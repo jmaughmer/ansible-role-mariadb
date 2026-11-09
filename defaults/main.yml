@@ -118,6 +118,8 @@ mariadb_interactive_timeout: "{{ mariadb_wait_timeout }}"
 # Concurrent sessions per account (0 = unlimited).
 mariadb_max_user_connections: 0
 mariadb_log_warnings: 2
+# 0750 also stops local PHP applications reaching mariadb_socket, which is inside
+# the data directory. phpMyAdmin needs "0751"; the phpIPAM role sets that itself.
 mariadb_datadir_mode: "0750"
 mariadb_log_dir_mode: "0750"
 
@@ -126,7 +128,7 @@ mariadb_log_dir_mode: "0750"
 # ---------------------------------------------------------------------------
 mariadb_tls_enabled: true
 # selfsigned: the role creates a private CA and a server certificate.
-# provided: you supply the certificate, key and CA (content or files).
+# provided: the certificate and key come from ssl_certificates.
 mariadb_tls_source: selfsigned
 mariadb_tls_dir: /etc/pki/mariadb
 mariadb_tls_cert_path: "{{ mariadb_tls_dir }}/server.crt"
@@ -138,12 +140,27 @@ mariadb_tls_version: TLSv1.2,TLSv1.3
 # Empty follows the system crypto policy, which is what you want under FIPS.
 mariadb_tls_cipher: ""
 
-# provided: PEM content (from Ansible Vault) or a file on the controller.
-mariadb_tls_cert_content: ""
-mariadb_tls_key_content: ""
+# provided: the same list the Apache, phpIPAM and Kea roles read. The entry in use
+# is written to <mariadb_tls_dir>/<name>.crt and <name>.key (root:mysql 0640), and
+# mariadb_tls_cert_path and mariadb_tls_key_path link to them. Put any intermediate
+# certificates in certificate.content, after the server certificate. Keep the keys
+# in Ansible Vault, without a passphrase.
+# - name: "{{ ansible_facts['fqdn'] }}"
+#   certificate:
+#     content: |
+#       -----BEGIN CERTIFICATE-----
+#       ...
+#       -----END CERTIFICATE-----
+#   key:
+#     content: !vault |
+#       $ANSIBLE_VAULT;1.1;AES256
+#       ...
+ssl_certificates: []
+# Entry to use. Empty: the entry named after the host's FQDN, else the first.
+mariadb_tls_certificate: ""
+# provided: the CA clients check the server against, which MariaDB also uses to
+# check client certificates. Optional: PEM content or a file on the controller.
 mariadb_tls_ca_content: ""
-mariadb_tls_cert_src: ""
-mariadb_tls_key_src: ""
 mariadb_tls_ca_src: ""
 
 # selfsigned: FIPS-approved defaults (RSA 3072, SHA-256).

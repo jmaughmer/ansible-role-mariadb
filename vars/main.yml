@@ -15,6 +15,17 @@ __mariadb_python_packages: [python3-PyMySQL]
 
 __mariadb_tls_packages: [python3-cryptography]
 
+# Supplied certificates. Only the names are read here, so these can't carry a
+# private key.
+__mariadb_ssl_certificate_names: "{{ ssl_certificates | map(attribute='name', default='') | list }}"
+# The name becomes a file name.
+__mariadb_ssl_certificate_name_pattern: '^(?!.*\.\.)[A-Za-z0-9_*][A-Za-z0-9._*-]*$'
+__mariadb_tls_certificate: >-
+  {{ mariadb_tls_certificate if mariadb_tls_certificate | length > 0
+     else (ansible_facts['fqdn'] if ansible_facts['fqdn'] in __mariadb_ssl_certificate_names
+           else __mariadb_ssl_certificate_names | first | default('')) }}
+__mariadb_tls_entry: "{{ ssl_certificates | selectattr('name', 'eq', __mariadb_tls_certificate) | first }}"
+
 # The key file tasks run openssl, which minimal images (AlmaLinux 10) lack.
 __mariadb_encryption_packages: [openssl]
 
