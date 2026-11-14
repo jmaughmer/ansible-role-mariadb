@@ -8,5 +8,3 @@ collections:
     version: ">=3.8.0"
   - name: community.crypto
     version: ">=2.15.0"
-  - name: containers.podman
-    version: ">=1.10.0"

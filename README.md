@@ -10,7 +10,7 @@ Features:
 - Data-at-rest encryption with the `file_key_management` plugin, covering InnoDB tables, redo log, temporary files, binary logs and Aria tables. The key file can itself be encrypted, and keys can be rotated.
 - Databases and users, with TLS required for remote accounts.
 - SELinux labeling for relocated directories and ports, a fapolicyd trust file for any non-RPM files, and FIPS checks.
-- Molecule tests with podman on EL8, EL9 and EL10, plus a key rotation scenario.
+- Molecule tests on the Proxmox test lab's VMs (EL9 and EL10, SELinux enforcing, firewalld running).
 
 phpMyAdmin and Apache live in their own roles: [ansible-role-phpmyadmin](https://github.com/jmaughmer/ansible-role-phpmyadmin) and [ansible-role-apache](https://github.com/jmaughmer/ansible-role-apache).
 
@@ -187,16 +187,44 @@ Tags: `mariadb_install`, `mariadb_tls`, `mariadb_encryption`, `mariadb_config`, 
 
 ## Testing
 
-Tests run locally with podman; there is no CI. On the AlmaLinux 10 WSL distribution (or any EL10 host):
+Tests run on the Proxmox test lab. `molecule test` converges two real KVM VMs cloned from the
+lab's fleet onto its isolated labnet network — EL9 and EL10 side by side, SELinux enforcing and
+firewalld running, so the role's SELinux and firewalld paths run for real — then checks
+idempotence and verifies the service, the databases, users, encryption and the fapolicyd trust
+file. The sequence is destroy → syntax → create → prepare → converge → idempotence → verify →
+destroy.
+
+Tests run on the lab's molecule control machine: `molecule`, `molecule-proxmox` and the role's
+collections are preinstalled there, and the driver's connection secrets and SSH key live only in
+its own config files. Nothing lab-specific is in this repo beyond the fleet template names and
+the default VMID band (9230–9231); hosts, tokens and subnets never leave the control machine.
+The Test Lab project's `molecule-labnet/` directory documents the lab itself.
+`LAB_TEMPLATE_EL9`/`LAB_TEMPLATE_EL10` pick each box's template (`template-alma8`,
+`template-alma9` or `template-alma10`):
 
 ```bash
-scripts/test.sh            # lint, default (EL9 + EL10), rotate, el8
-scripts/test.sh lint default
+molecule test                                   # EL9 + EL10
+LAB_TEMPLATE_EL9=template-alma8 molecule test   # exercise the EL8 interpreter path too
 ```
 
-The script creates two virtualenvs under `.cache/test`: one with current ansible-core, and one with ansible-core 2.16 for the EL8 scenario. The repository directory must be named `ansible-role-mariadb` so molecule can find the role. If rootless systemd containers don't work on your WSL setup, run it with `sudo`.
+The VMIDs come from `LAB_VMID_0/1` and default to the pinned 9230–9231 band, so a plain
+`molecule test` means one lab run of this repo at a time. For several runs of this repo at once,
+use the lab's `mlab` wrapper, which claims a free VMID band (and an isolated ephemeral
+directory) per run:
 
-Containers can't exercise SELinux, FIPS or firewalld, so those paths are covered by lint and need a test on a real host.
+```bash
+/root/labnet/mlab test -s default               # parallel-safe run on the control machine
+```
+
+Lint with `yamllint .` and `ansible-lint` (configured by [`.yamllint`](.yamllint) and
+[`.ansible-lint`](.ansible-lint)). There is no CI; run the lint and Molecule from the control
+machine.
+
+Not covered by the scenario: key rotation — converge with generated keys, rotate in a side
+effect, and check the table moves to the new key (the removed `rotate` scenario); the
+supplied-certificate paths with vaulted test keys (the removed `provided` scenarios); and the
+EL8-on-ansible-core-2.16 pin (the removed `el8` scenario; the EL8 guest itself is still one
+`LAB_TEMPLATE_EL9=template-alma8` away). FIPS mode remains uncovered.
 
 ## License
 
